@@ -19,7 +19,7 @@ extension MoodStateColor on MoodState {
     switch (this) {
       case MoodState.happy:
       case MoodState.neutral:
-        return const Color(0xFFFFFFFF); // white background
+        return const Color(0xFF171A1D); // white background
       case MoodState.sad:
         return const Color(0xFF171A1D); // black background in red mode
     }

@@ -1,7 +1,7 @@
 name: mood_widget_app
 description: A digital-wellbeing lock-screen widget whose face turns sad/red as your screen time climbs.
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.0.1+1
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
