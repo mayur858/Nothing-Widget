@@ -8,9 +8,8 @@ Flutter + a native Android `AppWidgetProvider`.
 
 | Home screen | Lock screen |
 |---|---|
-| ![Mood Widget on the home screen](<img width="1080" height="2340" alt="home_screen" src="https://github.com/user-attachments/assets/cd4d6a11-07b0-42b2-8135-4400063a0c92" />
-) | ![Mood Widget on the lock screen](<img width="1080" height="2340" alt="lock_screen" src="https://github.com/user-attachments/assets/53732fe0-0276-4839-9a7e-beb149e9f343" />
-) |
+| <img width="1080" height="2340" alt="home_screen" src="https://github.com/user-attachments/assets/cd4d6a11-07b0-42b2-8135-4400063a0c92" />
+| <img width="1080" height="2340" alt="lock_screen" src="https://github.com/user-attachments/assets/53732fe0-0276-4839-9a7e-beb149e9f343" /> |
 
 The widget renders identically in both places — same dot-matrix face,
 same green/amber/red state — confirming lock-screen support (via Good
