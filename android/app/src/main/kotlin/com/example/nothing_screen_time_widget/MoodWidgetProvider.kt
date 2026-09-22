@@ -82,7 +82,7 @@ class MoodWidgetProvider : AppWidgetProvider() {
             val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bitmap)
             val isSad = mood == UsageStatsHelper.Mood.SAD
-            val panelColor = if (isSad) Color.parseColor("#171A1D") else Color.parseColor("#FFFFFF")
+            val panelColor = Color.parseColor("#171A1D")
             val panelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = panelColor }
             val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = colorFor(mood) }
             val side = size.toFloat()
