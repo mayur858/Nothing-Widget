@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="80dp"
+    android:minHeight="80dp"
+    android:initialLayout="@layout/mood_widget"
+    android:previewImage="@drawable/widget_preview"
+    android:previewLayout="@layout/mood_widget"
+    android:description="@string/widget_description"
+    android:resizeMode="none"
+    android:updatePeriodMillis="1800000"
+    android:widgetCategory="home_screen|keyguard" />

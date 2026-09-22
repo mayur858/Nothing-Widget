@@ -1,0 +1,80 @@
+name: Build & Release APK
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter (stable)
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze --fatal-infos
+
+      # ── Release build ──────────────────────────────────────────────────────
+      # build.gradle.kts already uses the debug signingConfig for the release
+      # variant, so no keystore secrets are required — the APK is self-signed
+      # and can be sideloaded on any Android device.
+      - name: Build release APK
+        run: flutter build apk --release
+
+      # ── Upload artifact on every run (useful for PRs / branch pushes) ─────
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mood-widget-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 7
+
+      # ── Create GitHub Release only on version tags ─────────────────────────
+      - name: Get version from tag
+        if: startsWith(github.ref, 'refs/tags/')
+        id: version
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Rename APK with version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk \
+             build/app/outputs/flutter-apk/MoodWidget-${{ steps.version.outputs.tag }}.apk
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Mood Widget ${{ steps.version.outputs.tag }}
+          body: |
+            ## Install
+            1. Download **MoodWidget-${{ steps.version.outputs.tag }}.apk** below.
+            2. On your Android device: **Settings → Install unknown apps** → allow your browser/Files app.
+            3. Open the downloaded APK and tap **Install**.
+            4. Open the app, grant Usage Access, set your thresholds, and add the widget to your home/lock screen.
+
+            ## What's new
+            See commits since the previous tag.
+          files: build/app/outputs/flutter-apk/MoodWidget-${{ steps.version.outputs.tag }}.apk
+          generate_release_notes: true
+
