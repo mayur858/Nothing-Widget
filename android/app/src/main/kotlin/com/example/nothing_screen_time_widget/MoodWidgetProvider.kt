@@ -6,6 +6,7 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -13,14 +14,82 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PathMeasure
 import android.graphics.RectF
+import android.os.Build
 import android.widget.RemoteViews
 import es.antonborri.home_widget.HomeWidgetPlugin
 import kotlin.math.PI
 import kotlin.math.sin
 
+/**
+ * Face proportions, as fractions of the (square) bitmap side.
+ * Mirrors `FaceGeometry` in lib/widgets/mood_face_painter.dart — keep in sync.
+ */
+private object FaceGeometry {
+    const val DOT_RADIUS = 0.0115f
+
+    // Dotted rounded-rect "screen" outline
+    const val OUTLINE_LEFT = 0.355f
+    const val OUTLINE_TOP = 0.245f
+    const val OUTLINE_RIGHT = 0.645f // left + width (0.29)
+    const val OUTLINE_BOTTOM = 0.755f // top + height (0.51)
+    const val OUTLINE_CORNER_RADIUS = 0.04f
+    const val OUTLINE_SPACING = 0.033f
+
+    // Speaker grill
+    const val SPEAKER_Y = 0.285f
+    const val SPEAKER_SPACING = 0.024f
+    const val SPEAKER_DOT_SCALE = 0.95f
+
+    // Eyes
+    const val EYE_Y = 0.465f
+    const val EYE_LEFT_X = 0.455f
+    const val EYE_RIGHT_X = 0.545f
+    const val EYE_DOT_SCALE = 1.12f
+
+    // Nose — L shape: top dot at eye level, three more going down, one foot
+    const val NOSE_X = 0.488f
+    const val NOSE_2_Y = 0.493f
+    const val NOSE_3_Y = 0.521f
+    const val NOSE_BOTTOM_Y = 0.549f
+    const val NOSE_FOOT_X = 0.516f
+
+    // Mouth — 5-dot arc
+    const val MOUTH_Y = 0.615f
+    const val MOUTH_WIDTH = 0.145f
+    const val MOUTH_DOTS = 5
+    const val MOUTH_CURVE = 0.025f
+}
+
+/** Dot colours per mood, with a shade for each device theme (mirrors `MoodStatePalette` in Dart). */
+private object MoodPalette {
+    fun dotColor(mood: UsageStatsHelper.Mood, night: Boolean): Int = Color.parseColor(
+        when (mood) {
+            UsageStatsHelper.Mood.HAPPY -> if (night) "#00E676" else "#00B050"
+            UsageStatsHelper.Mood.NEUTRAL -> if (night) "#FFB300" else "#D97706"
+            UsageStatsHelper.Mood.SAD -> if (night) "#FF5252" else "#E53935"
+            UsageStatsHelper.Mood.NO_ACCESS -> if (night) "#9CA3AF" else "#6B7280"
+        },
+    )
+
+    fun isNight(context: Context): Boolean {
+        val nightMode = context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
+        return nightMode == Configuration.UI_MODE_NIGHT_YES
+    }
+}
+
 class MoodWidgetProvider : AppWidgetProvider() {
     override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
         appWidgetIds.forEach { id -> updateOne(context, appWidgetManager, id) }
+    }
+
+    /** First widget instance added: start the periodic refresh. */
+    override fun onEnabled(context: Context) {
+        MoodWorker.schedule(context)
+    }
+
+    /** Last widget instance removed: stop refreshing, nothing is left to repaint. */
+    override fun onDisabled(context: Context) {
+        MoodWorker.cancel(context)
     }
 
     companion object {
@@ -30,18 +99,47 @@ class MoodWidgetProvider : AppWidgetProvider() {
             ids.forEach { id -> updateOne(context, manager, id) }
         }
 
-        private fun updateOne(context: Context, manager: AppWidgetManager, id: Int) {
+        private fun currentMood(context: Context): UsageStatsHelper.Mood {
+            if (!UsageStatsHelper.hasUsageAccess(context)) return UsageStatsHelper.Mood.NO_ACCESS
             val preferences = HomeWidgetPlugin.getData(context)
-            val happyLimit = preferences.getDouble("happyLimitHours", 2.0)
-            val sadLimit = preferences.getDouble("sadLimitHours", 4.0)
-            val mood = UsageStatsHelper.moodFor(
+            return UsageStatsHelper.moodFor(
                 UsageStatsHelper.getScreenOnMillisToday(context),
-                happyLimit,
-                sadLimit,
+                preferences.getDouble("happyLimitHours", 2.0),
+                preferences.getDouble("sadLimitHours", 4.0),
             )
+        }
+
+        private fun descriptionFor(mood: UsageStatsHelper.Mood): Int = when (mood) {
+            UsageStatsHelper.Mood.HAPPY -> R.string.widget_description_happy
+            UsageStatsHelper.Mood.NEUTRAL -> R.string.widget_description_neutral
+            UsageStatsHelper.Mood.SAD -> R.string.widget_description_sad
+            UsageStatsHelper.Mood.NO_ACCESS -> R.string.widget_description_no_access
+        }
+
+        private fun updateOne(context: Context, manager: AppWidgetManager, id: Int) {
+            val mood = currentMood(context)
 
             val views = RemoteViews(context.packageName, R.layout.mood_widget).apply {
-                setImageViewBitmap(R.id.widget_image, drawFace(mood))
+                // The card (fill + border) is the layout's day/night-aware background drawable,
+                // so the launcher flips it with the device theme on its own. The bitmap is only a
+                // white dot mask, tinted below with the mood colour for the current theme.
+                setImageViewBitmap(R.id.widget_image, drawFaceMask(mood))
+
+                val lightDots = MoodPalette.dotColor(mood, night = false)
+                val darkDots = MoodPalette.dotColor(mood, night = true)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    // Resolved by the host, so the dots follow theme changes without a repaint.
+                    setColorInt(R.id.widget_image, "setColorFilter", lightDots, darkDots)
+                } else {
+                    // Older Android: use the theme at update time (refreshed on the next update).
+                    setInt(
+                        R.id.widget_image,
+                        "setColorFilter",
+                        if (MoodPalette.isNight(context)) darkDots else lightDots,
+                    )
+                }
+
+                setContentDescription(R.id.widget_image, context.getString(descriptionFor(mood)))
 
                 // Tapping widget opens the app
                 val intent = Intent(context, MainActivity::class.java).apply {
@@ -67,87 +165,69 @@ class MoodWidgetProvider : AppWidgetProvider() {
             }
         }
 
-        private fun colorFor(mood: UsageStatsHelper.Mood): Int = when (mood) {
-            UsageStatsHelper.Mood.HAPPY -> Color.parseColor("#00B050")   // contrast green on white
-            UsageStatsHelper.Mood.NEUTRAL -> Color.parseColor("#D97706") // contrast amber on white
-            UsageStatsHelper.Mood.SAD -> Color.parseColor("#FF5252")     // bright red on black
-        }
-
         /**
-         * A compact Nothing-inspired dot face:
-         * - Happy (green) & Neutral (yellow): White background card with subtle border.
-         * - Sad (red): Black background card.
+         * The Nothing-inspired dot face as a white-on-transparent mask. The mood decides the
+         * mouth shape (smile / flat / frown); colour is applied later by the ImageView tint,
+         * and the card behind it comes from the layout's background drawable.
          */
-        private fun drawFace(mood: UsageStatsHelper.Mood, size: Int = 360): Bitmap {
+        private fun drawFaceMask(mood: UsageStatsHelper.Mood, size: Int = 360): Bitmap {
             val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bitmap)
-            val isSad = mood == UsageStatsHelper.Mood.SAD
-            val panelColor = Color.parseColor("#171A1D")
-            val panelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = panelColor }
-            val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = colorFor(mood) }
+            val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
             val side = size.toFloat()
-            val dotRadius = side * 0.0115f
+            val dotRadius = side * FaceGeometry.DOT_RADIUS
 
-            canvas.drawRoundRect(
-                RectF(0f, 0f, side, side),
-                side * 0.135f,
-                side * 0.135f,
-                panelPaint,
+            val outline = RectF(
+                side * FaceGeometry.OUTLINE_LEFT,
+                side * FaceGeometry.OUTLINE_TOP,
+                side * FaceGeometry.OUTLINE_RIGHT,
+                side * FaceGeometry.OUTLINE_BOTTOM,
+            )
+            drawDottedRoundRect(
+                canvas,
+                dotPaint,
+                outline,
+                side * FaceGeometry.OUTLINE_CORNER_RADIUS,
+                dotRadius,
+                side * FaceGeometry.OUTLINE_SPACING,
             )
 
-            // Draw subtle border around white card for happy and neutral modes
-            if (!isSad) {
-                val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = Color.parseColor("#E5E7EB")
-                    style = Paint.Style.STROKE
-                    strokeWidth = side * 0.008f
-                }
-                canvas.drawRoundRect(
-                    RectF(side * 0.004f, side * 0.004f, side * 0.996f, side * 0.996f),
-                    side * 0.135f,
-                    side * 0.135f,
-                    borderPaint,
-                )
-            }
-
-            val outline = RectF(side * 0.355f, side * 0.245f, side * 0.645f, side * 0.755f)
-            drawDottedRoundRect(canvas, dotPaint, outline, side * 0.04f, dotRadius, side * 0.033f)
-
             // Speaker grill at the top inside the phone outline
-            val speakerY = side * 0.285f
-            val speakerSpacing = side * 0.024f
-            canvas.drawCircle(side * 0.5f - speakerSpacing, speakerY, dotRadius * 0.95f, dotPaint)
-            canvas.drawCircle(side * 0.5f,                  speakerY, dotRadius * 0.95f, dotPaint)
-            canvas.drawCircle(side * 0.5f + speakerSpacing, speakerY, dotRadius * 0.95f, dotPaint)
+            val speakerY = side * FaceGeometry.SPEAKER_Y
+            val speakerSpacing = side * FaceGeometry.SPEAKER_SPACING
+            val speakerRadius = dotRadius * FaceGeometry.SPEAKER_DOT_SCALE
+            canvas.drawCircle(side * 0.5f - speakerSpacing, speakerY, speakerRadius, dotPaint)
+            canvas.drawCircle(side * 0.5f, speakerY, speakerRadius, dotPaint)
+            canvas.drawCircle(side * 0.5f + speakerSpacing, speakerY, speakerRadius, dotPaint)
 
-            val eyeY = side * 0.465f
-            canvas.drawCircle(side * 0.455f, eyeY, dotRadius * 1.12f, dotPaint)
-            canvas.drawCircle(side * 0.545f, eyeY, dotRadius * 1.12f, dotPaint)
+            val eyeY = side * FaceGeometry.EYE_Y
+            val eyeRadius = dotRadius * FaceGeometry.EYE_DOT_SCALE
+            canvas.drawCircle(side * FaceGeometry.EYE_LEFT_X, eyeY, eyeRadius, dotPaint)
+            canvas.drawCircle(side * FaceGeometry.EYE_RIGHT_X, eyeY, eyeRadius, dotPaint)
 
             // Nose — L shape: 4 dots down (top at eye level, between eyes) + 1 foot right
-            val noseX     = side * 0.488f   // between left eye (45.5%) and centre
-            val nose2Y    = side * 0.493f
-            val nose3Y    = side * 0.521f
-            val noseBotY  = side * 0.549f   // corner
-            val noseFoot  = side * 0.516f   // one dot to the right
-            canvas.drawCircle(noseX,    eyeY,    dotRadius, dotPaint) // at eye row
-            canvas.drawCircle(noseX,    nose2Y,  dotRadius, dotPaint)
-            canvas.drawCircle(noseX,    nose3Y,  dotRadius, dotPaint)
-            canvas.drawCircle(noseX,    noseBotY,dotRadius, dotPaint)
-            canvas.drawCircle(noseFoot, noseBotY,dotRadius, dotPaint)
+            val noseX = side * FaceGeometry.NOSE_X
+            val noseBottomY = side * FaceGeometry.NOSE_BOTTOM_Y
+            canvas.drawCircle(noseX, eyeY, dotRadius, dotPaint) // at eye row
+            canvas.drawCircle(noseX, side * FaceGeometry.NOSE_2_Y, dotRadius, dotPaint)
+            canvas.drawCircle(noseX, side * FaceGeometry.NOSE_3_Y, dotRadius, dotPaint)
+            canvas.drawCircle(noseX, noseBottomY, dotRadius, dotPaint)
+            canvas.drawCircle(side * FaceGeometry.NOSE_FOOT_X, noseBottomY, dotRadius, dotPaint)
 
-            val mouthY = side * 0.615f
-            val mouthWidth = side * 0.145f
-            repeat(5) { index ->
-                val t = index / 4f
+            // Mouth — happy curves down = smile ∪, sad curves up = frown ∩
+            val mouthY = side * FaceGeometry.MOUTH_Y
+            val mouthWidth = side * FaceGeometry.MOUTH_WIDTH
+            val lastDot = FaceGeometry.MOUTH_DOTS - 1
+            repeat(FaceGeometry.MOUTH_DOTS) { index ->
+                val t = index / lastDot.toFloat()
                 val x = side / 2f - mouthWidth / 2f + t * mouthWidth
-                val curve = sin(t * PI).toFloat() * side * 0.025f
+                val curve = sin(t * PI).toFloat() * side * FaceGeometry.MOUTH_CURVE
                 val y = when (mood) {
-                    // happy → corners at mouthY, middle BELOW → smile ∪
-                    UsageStatsHelper.Mood.HAPPY   -> mouthY + curve
-                    UsageStatsHelper.Mood.NEUTRAL -> mouthY
-                    // sad   → corners at mouthY, middle ABOVE → frown ∩
-                    UsageStatsHelper.Mood.SAD     -> mouthY - curve
+                    // corners at mouthY, middle BELOW → smile ∪
+                    UsageStatsHelper.Mood.HAPPY -> mouthY + curve
+                    UsageStatsHelper.Mood.NEUTRAL, UsageStatsHelper.Mood.NO_ACCESS -> mouthY
+                    // corners at mouthY, middle ABOVE → frown ∩
+                    UsageStatsHelper.Mood.SAD -> mouthY - curve
                 }
                 canvas.drawCircle(x, y, dotRadius, dotPaint)
             }

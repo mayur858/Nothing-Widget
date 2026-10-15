@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#181C20</color>
+
+    <!-- Widget card: light theme (see values-night/colors.xml for dark) -->
+    <color name="widget_panel">#FFFFFF</color>
+    <color name="widget_border">#E5E7EB</color>
 </resources>

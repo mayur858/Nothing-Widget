@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="widget_description">Screen time mood face</string>
+    <string name="widget_description_happy">Screen time mood: happy</string>
+    <string name="widget_description_neutral">Screen time mood: neutral</string>
+    <string name="widget_description_sad">Screen time mood: sad</string>
+    <string name="widget_description_no_access">Screen time mood unavailable: usage access needed. Tap to open the app.</string>
+</resources>

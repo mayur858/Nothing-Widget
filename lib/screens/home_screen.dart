@@ -1,7 +1,11 @@
 import 'dart:async';
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:home_widget/home_widget.dart';
+
+import '../models/mood_thresholds.dart';
+import '../services/usage_service.dart';
 import '../widgets/mood_face_painter.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -11,151 +15,194 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
-  // Must match the MethodChannel name used in MainActivity.kt
-  static const _channel = MethodChannel('mood_widget/usage');
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
+  static const _usage = UsageService();
 
-  double happyLimitHours = 2;
-  double sadLimitHours = 4;
+  MoodThresholds thresholds = const MoodThresholds();
   bool? hasUsageAccess;
   int screenOnMinutesToday = 0;
 
-  /// Refreshes screen-time every 60 s while the app is open.
+  /// Refreshes screen-time every 60 s while the app is in the foreground.
   Timer? _refreshTimer;
 
   @override
   void initState() {
     super.initState();
-    _refreshPermission();
-    _refreshScreenTime();
-    // Kick off live updates — re-fetch usage every 60 seconds
+    WidgetsBinding.instance.addObserver(this);
+    _loadThresholds();
+    _refreshAll();
+    _startTimer();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _stopTimer();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    switch (state) {
+      case AppLifecycleState.resumed:
+        // The user may have just granted Usage Access in system settings, so
+        // re-check everything and repaint the widget with fresh data.
+        _refreshAll(syncWidget: true);
+        _startTimer();
+      case AppLifecycleState.paused:
+        _stopTimer();
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.hidden:
+      case AppLifecycleState.detached:
+        break;
+    }
+  }
+
+  void _startTimer() {
+    _refreshTimer?.cancel();
     _refreshTimer = Timer.periodic(
       const Duration(seconds: 60),
       (_) => _refreshScreenTime(),
     );
   }
 
-  @override
-  void dispose() {
+  void _stopTimer() {
     _refreshTimer?.cancel();
-    super.dispose();
+    _refreshTimer = null;
+  }
+
+  Future<void> _loadThresholds() async {
+    final loaded = await MoodThresholds.load();
+    if (mounted) setState(() => thresholds = loaded);
+  }
+
+  Future<void> _refreshAll({bool syncWidget = false}) async {
+    await Future.wait([_refreshPermission(), _refreshScreenTime()]);
+    if (syncWidget) await _updateWidget();
   }
 
   Future<void> _refreshPermission() async {
-    final granted =
-        await _channel.invokeMethod<bool>('hasUsageAccess') ?? false;
+    final granted = await _usage.hasUsageAccess();
     if (mounted) setState(() => hasUsageAccess = granted);
   }
 
   Future<void> _refreshScreenTime() async {
-    final minutes =
-        await _channel.invokeMethod<int>('getScreenOnMinutesToday') ?? 0;
-    if (mounted) setState(() => screenOnMinutesToday = minutes);
+    final minutes = await _usage.screenOnMinutesToday();
+    // Keep the previous value if the read failed.
+    if (minutes != null && mounted) {
+      setState(() => screenOnMinutesToday = minutes);
+    }
   }
 
-  MoodState get _previewState {
-    final hours = screenOnMinutesToday / 60;
-    if (hours < happyLimitHours) return MoodState.happy;
-    if (hours < sadLimitHours) return MoodState.neutral;
-    return MoodState.sad;
+  /// Asks the native provider to repaint. Returns false if that failed.
+  Future<bool> _updateWidget() async {
+    try {
+      await HomeWidget.updateWidget(
+        name: 'MoodWidgetProvider',
+        androidName: 'MoodWidgetProvider',
+      );
+      return true;
+    } on Exception {
+      return false;
+    }
   }
 
-  /// Happy slider max: always at least 0.5 h above today's screen time,
-  /// rounded up to the nearest 0.5 h step, with a floor of 6 h.
-  double get _happyMax {
-    final screenHours = screenOnMinutesToday / 60.0;
-    // Round up to next 0.5 h boundary, then add one more step so the
-    // slider's rightmost tick is always strictly above current usage.
-    final needed = ((screenHours / 0.5).ceil() + 1) * 0.5;
-    return needed > 6.0 ? needed : 6.0;
-  }
+  MoodState get _previewState => hasUsageAccess == false
+      ? MoodState.noAccess
+      : thresholds.moodFor(screenOnMinutesToday / 60);
 
   Future<void> _saveAndUpdateWidget() async {
-    // home_widget writes these into the same SharedPreferences file the
-    // native AppWidgetProvider reads from (see MoodWidgetProvider.kt).
-    await HomeWidget.saveWidgetData<double>('happyLimitHours', happyLimitHours);
-    await HomeWidget.saveWidgetData<double>('sadLimitHours', sadLimitHours);
-    await HomeWidget.updateWidget(
-      name: 'MoodWidgetProvider',
-      androidName: 'MoodWidgetProvider',
-    );
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('Saved — the widget will refresh shortly')),
-      );
+    var saved = true;
+    try {
+      // home_widget writes these into the same SharedPreferences file the
+      // native AppWidgetProvider reads from (see MoodWidgetProvider.kt).
+      await thresholds.save();
+      saved = await _updateWidget();
+    } on Exception {
+      saved = false;
     }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(saved
+            ? 'Saved — the widget will refresh shortly'
+            : "Couldn't update the widget. Please try again."),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final brightness = Theme.of(context).brightness;
+    final screenHours = screenOnMinutesToday / 60;
+    final happyMax = MoodThresholds.happySliderMax(screenHours);
+    final happyValue = math.min(thresholds.happyHours, happyMax);
+
     return Scaffold(
       appBar: AppBar(title: const Text('Mood Widget')),
       body: RefreshIndicator(
-        onRefresh: () async {
-          await _refreshPermission();
-          await _refreshScreenTime();
-        },
+        onRefresh: () => _refreshAll(syncWidget: true),
         child: ListView(
           padding: const EdgeInsets.all(20),
           children: [
             Center(
-              child: SizedBox(
-                width: 160,
-                height: 160,
-                child: CustomPaint(
-                  painter: MoodFacePainter(_previewState),
+              child: Semantics(
+                image: true,
+                label: 'Mood face: ${_previewState.label}',
+                child: SizedBox(
+                  width: 160,
+                  height: 160,
+                  child: CustomPaint(
+                    painter: MoodFacePainter(_previewState, brightness),
+                  ),
                 ),
               ),
             ),
             const SizedBox(height: 8),
             Center(
               child: Text(
-                '${(screenOnMinutesToday / 60).toStringAsFixed(1)}h on screen today',
-                style: const TextStyle(color: Colors.grey),
+                '${screenHours.toStringAsFixed(1)}h on screen today',
+                style: TextStyle(color: scheme.onSurfaceVariant),
               ),
             ),
             const SizedBox(height: 24),
             if (hasUsageAccess == false)
               Card(
-                color: Colors.red.shade900,
+                color: scheme.errorContainer,
                 child: ListTile(
+                  textColor: scheme.onErrorContainer,
                   title: const Text('Usage access needed'),
                   subtitle: const Text(
                       'Grant access so the widget can read your screen time.'),
                   trailing: FilledButton(
-                    onPressed: () async {
-                      await _channel.invokeMethod('openUsageAccessSettings');
-                    },
+                    onPressed: _usage.openUsageAccessSettings,
                     child: const Text('Grant'),
                   ),
                 ),
               ),
             const SizedBox(height: 24),
-            Text('Happy below: ${happyLimitHours.toStringAsFixed(1)}h'),
+            Text('Happy below: ${thresholds.happyHours.toStringAsFixed(1)}h'),
             Slider(
-              value: happyLimitHours.clamp(0.5, _happyMax),
-              min: 0.5,
-              max: _happyMax,
-              // steps of 0.5 h across the dynamic range
-              divisions: ((_happyMax - 0.5) / 0.5).round(),
-              label: '${happyLimitHours.toStringAsFixed(1)}h',
+              value: happyValue,
+              min: MoodThresholds.minHappyHours,
+              max: happyMax,
+              divisions: MoodThresholds.happySliderDivisions(happyMax),
+              label: '${happyValue.toStringAsFixed(1)}h',
               onChanged: (v) => setState(() {
-                happyLimitHours = v;
-                // keep sad >= happy so the sad slider's min never exceeds its value
-                if (sadLimitHours < happyLimitHours) {
-                  sadLimitHours = happyLimitHours;
-                }
+                thresholds = thresholds.withHappy(v);
               }),
             ),
-            Text('Sad above: ${sadLimitHours.toStringAsFixed(1)}h'),
+            Text('Sad above: ${thresholds.sadHours.toStringAsFixed(1)}h'),
             Slider(
-              value: sadLimitHours,
-              min: happyLimitHours,
-              max: 10,
-              divisions: 19,
-              label: '${sadLimitHours.toStringAsFixed(1)}h',
-              onChanged: (v) => setState(() => sadLimitHours = v),
+              value: thresholds.sadHours,
+              min: thresholds.happyHours,
+              max: thresholds.sadSliderMax,
+              divisions: thresholds.sadSliderDivisions,
+              label: '${thresholds.sadHours.toStringAsFixed(1)}h',
+              onChanged: (v) => setState(() {
+                thresholds = thresholds.withSad(v);
+              }),
             ),
             const SizedBox(height: 24),
             FilledButton(
@@ -166,10 +213,10 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
             const SizedBox(height: 16),
-            const Text(
+            Text(
               'Then: long-press your lock screen → Widgets (or open Good Lock '
               '→ LockStar) and add "Mood Widget" like any other widget.',
-              style: TextStyle(color: Colors.grey),
+              style: TextStyle(color: scheme.onSurfaceVariant),
             ),
           ],
         ),
