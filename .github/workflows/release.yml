@@ -7,6 +7,10 @@ on:
   pull_request:
     branches: [main]
 
+# Needed so the release step can create a GitHub Release with the default token.
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build APK
@@ -34,10 +38,35 @@ jobs:
       - name: Analyze
         run: flutter analyze --fatal-infos
 
-      # ── Release build ──────────────────────────────────────────────────────
-      # build.gradle.kts already uses the debug signingConfig for the release
-      # variant, so no keystore secrets are required — the APK is self-signed
-      # and can be sideloaded on any Android device.
+      - name: Test
+        run: flutter test
+
+      # ── Release signing ────────────────────────────────────────────────────
+      # With the secrets below set, the APK is signed with your own keystore, so
+      # every release is signed by the same key and installs as an in-place
+      # update. Without them (e.g. PRs from forks) the build falls back to the
+      # debug key: fine for testing, but each build gets a different signature
+      # and can't be installed over a previous one.
+      #   ANDROID_KEYSTORE_BASE64   base64 of your .jks   (base64 -w0 release.jks)
+      #   ANDROID_KEYSTORE_PASSWORD
+      #   ANDROID_KEY_ALIAS
+      #   ANDROID_KEY_PASSWORD
+      - name: Configure release signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "::warning::No signing secrets configured - building with the debug key. Updates between releases won't install in place."
+            exit 0
+          fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/release.jks
+          printf 'storeFile=release.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$ANDROID_KEYSTORE_PASSWORD" "$ANDROID_KEY_ALIAS" "$ANDROID_KEY_PASSWORD" \
+            > android/key.properties
+
       - name: Build release APK
         run: flutter build apk --release
 
@@ -77,4 +106,3 @@ jobs:
             See commits since the previous tag.
           files: build/app/outputs/flutter-apk/MoodWidget-${{ steps.version.outputs.tag }}.apk
           generate_release_notes: true
-
