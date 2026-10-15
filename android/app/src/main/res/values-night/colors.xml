@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Widget card: dark theme -->
+    <color name="widget_panel">#171A1D</color>
+    <color name="widget_border">#2A2E33</color>
+</resources>
